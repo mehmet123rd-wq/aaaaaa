@@ -5,6 +5,7 @@ const app = express();
 app.use(express.static(__dirname));
 
 const http = require('http').createServer(app);
+const { ExpressPeerServer } = require('peer');
 const yts = require('yt-search');
 
 const io = require('socket.io')(http, {
@@ -14,6 +15,13 @@ const io = require('socket.io')(http, {
   pingInterval: 25000,
   transports: ['websocket', 'polling']
 });
+
+// PeerJS Sunucusunu Express HTTP sunucusuna entegre ediyoruz (Railway uyumlu)
+const peerServer = ExpressPeerServer(http, {
+  debug: true,
+  path: '/'
+});
+app.use('/peerjs', peerServer);
 
 const channelsDB = {
   "Genel Kanal": { password: "123456", owner: "Sistem" }
