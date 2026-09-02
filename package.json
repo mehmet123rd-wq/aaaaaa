@@ -11,7 +11,7 @@
     "toolbar": false
   },
   "scripts": {
-    "start": "nw .",
+    "start": "node server.js .",
     "build": "nwbuild -p win64 ."
   },
   "dependencies": {
