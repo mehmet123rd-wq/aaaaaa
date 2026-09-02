@@ -419,9 +419,14 @@
   <audio id="remoteAudioElement" autoplay></audio>
 
   <script>
-    // Tarayıcı ve Radmin IP Adresini Otomatik Algılar (localhost veya 26.x.x.x)
-    const socket = io (window.location.origin); 
-    let socket;
+    // Dinamik Railway ve yerel bağlantı uyumlu tekil socket tanımı
+    const socket = io(window.location.origin, {
+      transports: ['websocket', 'polling'],
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000
+    });
+    
     let peer;
 
     let isRegisterMode = false;
@@ -681,67 +686,46 @@
       errorMsg.innerText = "Sunucuyla bağlantı kuruluyor...";
       errorMsg.style.display = "block";
 
-      try {
-        const tempSocket = io(`http://${SERVER_IP}:3000`, { 
-          transports: ['websocket', 'polling'], 
-          timeout: 5000 
-        });
-
-        if (isRegisterMode) {
-          tempSocket.emit('register-user', { username: user, password: pass });
-          tempSocket.on('register-result', (res) => {
-            errorMsg.style.color = res.success ? "#23a55a" : "#fa777c";
-            errorMsg.innerText = res.message;
-            errorMsg.style.display = "block";
-            tempSocket.disconnect();
-          });
-        } else {
-          tempSocket.emit('auth-check', { username: user, password: pass });
-          tempSocket.on('auth-result', (result) => {
-            if (result.success) {
-              username = user;
-              userAvatar = result.avatar || "";
-              userStatus = result.status || "";
-              isAdminUser = result.isAdmin;
-              myFriends = result.friends || [];
-              myRequests = result.friendRequests || [];
-
-              document.getElementById('authOverlay').style.display = "none";
-              document.getElementById('userInfoDisplay').innerText = username;
-              document.getElementById('userStatusDisplay').innerText = userStatus;
-              updateUserAvatarDisplay();
-
-              cachedChannels = result.channels || {};
-              renderChannelsList();
-              renderFriendsList();
-
-              if (isAdminUser) {
-                pendingUsersArray = result.pendingUsers || [];
-                cachedAllUsers = result.allUsers || {};
-              }
-
-              tempSocket.disconnect();
-              initConnections();
-            } else {
-              errorMsg.style.color = "#fa777c";
-              errorMsg.innerText = result.message || "Giriş başarısız!";
-              errorMsg.style.display = "block";
-              tempSocket.disconnect();
-            }
-          });
-        }
-
-        tempSocket.on('connect_error', () => {
-          errorMsg.style.color = "#fa777c";
-          errorMsg.innerText = "Sunucuya ulaşılamadı!";
+      if (isRegisterMode) {
+        socket.emit('register-user', { username: user, password: pass });
+        socket.once('register-result', (res) => {
+          errorMsg.style.color = res.success ? "#23a55a" : "#fa777c";
+          errorMsg.innerText = res.message;
           errorMsg.style.display = "block";
-          tempSocket.disconnect();
         });
+      } else {
+        socket.emit('auth-check', { username: user, password: pass });
+        socket.once('auth-result', (result) => {
+          if (result.success) {
+            username = user;
+            userAvatar = result.avatar || "";
+            userStatus = result.status || "";
+            isAdminUser = result.isAdmin;
+            myFriends = result.friends || [];
+            myRequests = result.friendRequests || [];
 
-      } catch (err) {
-        errorMsg.style.color = "#fa777c";
-        errorMsg.innerText = "Hata: " + err.message;
-        errorMsg.style.display = "block";
+            document.getElementById('authOverlay').style.display = "none";
+            document.getElementById('userInfoDisplay').innerText = username;
+            document.getElementById('userStatusDisplay').innerText = userStatus;
+            updateUserAvatarDisplay();
+
+            cachedChannels = result.channels || {};
+            renderChannelsList();
+            renderFriendsList();
+
+            if (isAdminUser) {
+              pendingUsersArray = result.pendingUsers || [];
+              cachedAllUsers = result.allUsers || {};
+            }
+
+            initPeerConnection();
+            setupSocketListeners();
+          } else {
+            errorMsg.style.color = "#fa777c";
+            errorMsg.innerText = result.message || "Giriş başarısız!";
+            errorMsg.style.display = "block";
+          }
+        });
       }
     }
 
@@ -931,14 +915,26 @@
       });
     }
 
-    function initConnections() {
-      socket = io(`http://${SERVER_IP}:3000`, { 
-        transports: ['websocket', 'polling'],
-        reconnection: true,
-        reconnectionAttempts: Infinity,
-        reconnectionDelay: 1000
+    function initPeerConnection() {
+      peer = new Peer(undefined, {
+        host: window.location.hostname,
+        port: window.location.port || (window.location.protocol === 'https:' ? 443 : 80),
+        path: '/peerjs',
+        secure: window.location.protocol === 'https:',
+        config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }] }
       });
-      
+
+      peer.on('open', id => { window.myPeerId = id; });
+      peer.on('disconnected', () => { peer.reconnect(); });
+
+      peer.on('call', call => {
+        currentCall = call;
+        call.answer(localStream);
+        call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
+      });
+    }
+
+    function setupSocketListeners() {
       socket.on('new-pending-user', (newU) => {
         if (isAdminUser) {
           pendingUsersArray.push(newU);
@@ -1012,20 +1008,6 @@
 
       socket.on('user-stop-typing', (data) => {
         document.getElementById('typingIndicator').innerText = "";
-      });
-
-      peer = new Peer(undefined, {
-        host: SERVER_IP, port: 9000, path: '/peerjs',
-        config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }] }
-      });
-
-      peer.on('open', id => { window.myPeerId = id; });
-      peer.on('disconnected', () => { peer.reconnect(); });
-
-      peer.on('call', call => {
-        currentCall = call;
-        call.answer(localStream);
-        call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
       });
 
       socket.on('user-connected', (userId, rName, rAvatar) => {
@@ -1162,14 +1144,11 @@
       videoStage.style.display = "none";
       emptyState.style.display = "block";
 
-      if (socket) socket.disconnect();
-
       isConnected = false;
       document.getElementById('controlsSection').style.display = "none";
       document.getElementById('roomUsersSection').style.display = "none";
 
       renderChannelsList();
-      initConnections();
       appendSystemMessage(`${username} kanaldan ayrıldı.`);
     }
 
