@@ -809,7 +809,9 @@
       renderChannelsList();
       renderFriendsList();
 
-      socket.emit('join-room', currentRoom, window.myPeerId || 'noid', username);
+      if (socket) {
+        socket.emit('join-room', currentRoom, window.myPeerId || 'noid', username);
+      }
     }
 
     function openChannelContextMenu(e, chName) {
@@ -1045,7 +1047,6 @@
         appendSystemMessage(`${remoteUsername} kanala katıldı.`);
         updateUserList(remoteUsername, true, false);
 
-        // Gecikmesiz ve anında akış aktarımı için karşı tarafa doğrudan mevcut akışla çağrı atılıyor
         setTimeout(() => {
           const streamToSend = screenStream || cameraStream || localStream;
           if (streamToSend) {
@@ -1142,7 +1143,7 @@
         };
 
         localStream = await navigator.mediaDevices.getUserMedia(constraints);
-        socket.emit('join-room', currentRoom, window.myPeerId, username);
+        socket.emit('join-room', currentRoom, window.myPeerId || 'noid', username);
         
         isConnected = true;
         renderChannelsList();
@@ -1394,7 +1395,6 @@
       const videoEl = document.getElementById('mainVideo');
       videoEl.srcObject = stream;
       
-      // Gecikmeyi en aza indirmek için video öznitelikleri optimize edildi
       videoEl.setAttribute('autoplay', '');
       videoEl.setAttribute('playsinline', '');
       videoEl.muted = false;
