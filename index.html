@@ -419,9 +419,9 @@
   <audio id="remoteAudioElement" autoplay></audio>
 
   <script>
-    // Dinamik Railway ve yerel bağlantı uyumlu tekil socket tanımı
+    // Polling öncelikli başlatma: Railway proxy WebSocket frame hatalarını tamamen engeller
     const socket = io(window.location.origin, {
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 1000
