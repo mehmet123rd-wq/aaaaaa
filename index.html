@@ -117,7 +117,7 @@
     .empty-screen-state { color: #949ba4; font-size: 16px; font-weight: 500; text-align: center; }
 
     .video-stage {
-      position: relative; width: 100%; height: 100%; display: none; justify-content: center; align-items: center; background: #1e1f22; border-radius: 8px; overflow: hidden;
+      position: relative; width: 100%; height: 100%; display: none; flex-direction: column; justify-content: center; align-items: center; background: #1e1f22; border-radius: 8px; overflow: hidden;
     }
     .main-video-container { width: 100%; height: 100%; position: relative; display: flex; justify-content: center; align-items: center; }
     .main-video-container video, .main-video-container iframe { width: 100%; height: 100%; object-fit: contain; background: #000; border: none; }
@@ -430,13 +430,13 @@
     let peer;
 
     let isRegisterMode = false;
-    let localStream, cameraStream, screenStream, currentCall;
+    let localStream, cameraStream, screenStream;
+    let activeCalls = {}; 
     let isConnected = false, isMicOn = true, isDeafened = false, isCamOn = false, isScreenSharing = false;
     let username = "", userAvatar = "", userStatus = "", remoteUsername = "Arkadaşınız", remoteAvatar = "";
     let currentRoom = "Genel Kanal";
     let isDM = false;
     let typingTimer;
-    let lastRemotePeerId = null;
 
     let authenticatedChannels = {}; 
     let cachedAllUsers = {};
@@ -949,11 +949,30 @@
       peer.on('disconnected', () => { peer.reconnect(); });
 
       peer.on('call', call => {
-        currentCall = call;
-        const streamToAnswer = screenStream || cameraStream || localStream;
-        call.answer(streamToAnswer);
-        call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
+        const streamToSend = getActiveStreamToSend();
+        call.answer(streamToSend);
+        call.on('stream', remoteStream => {
+          activeCalls[call.peer] = call;
+          handleIncomingStream(remoteStream, call.peer);
+        });
+        call.on('close', () => {
+          removeRemoteStreamElement(call.peer);
+        });
       });
+    }
+
+    function getActiveStreamToSend() {
+      if (isScreenSharing && screenStream) {
+        const combined = new MediaStream();
+        screenStream.getVideoTracks().forEach(track => combined.addTrack(track));
+        if (screenStream.getAudioTracks().length > 0) {
+          screenStream.getAudioTracks().forEach(track => combined.addTrack(track));
+        } else if (localStream && localStream.getAudioTracks().length > 0) {
+          localStream.getAudioTracks().forEach(track => combined.addTrack(track));
+        }
+        return combined;
+      }
+      return cameraStream || localStream;
     }
 
     function setupSocketListeners() {
@@ -1043,24 +1062,32 @@
           remoteUsername = rName;
           remoteAvatar = rAvatar || "";
         }
-        lastRemotePeerId = userId;
         appendSystemMessage(`${remoteUsername} kanala katıldı.`);
         updateUserList(remoteUsername, true, false);
 
         setTimeout(() => {
-          const streamToSend = screenStream || cameraStream || localStream;
-          if (streamToSend) {
+          const streamToSend = getActiveStreamToSend();
+          if (streamToSend && userId && userId !== window.myPeerId) {
             const call = peer.call(userId, streamToSend);
-            currentCall = call;
-            call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
+            activeCalls[userId] = call;
+            call.on('stream', remoteStream => {
+              handleIncomingStream(remoteStream, userId);
+            });
+            call.on('close', () => {
+              removeRemoteStreamElement(userId);
+            });
           }
-        }, 300);
+        }, 400);
       });
 
-      socket.on('user-disconnected', () => {
+      socket.on('user-disconnected', (userId) => {
         playDiscordSound('leave');
-        lastRemotePeerId = null;
-        appendSystemMessage(`${remoteUsername} kanaldan ayrıldı.`);
+        appendSystemMessage(`Bir kullanıcı kanaldan ayrıldı.`);
+        if (activeCalls[userId]) {
+          activeCalls[userId].close();
+          delete activeCalls[userId];
+        }
+        removeRemoteStreamElement(userId);
         updateUserList(null, false, false);
         resetStageOnDisconnect();
       });
@@ -1165,11 +1192,15 @@
       if (cameraStream) cameraStream.getTracks().forEach(track => track.stop());
       if (screenStream) screenStream.getTracks().forEach(track => track.stop());
 
+      for (let peerId in activeCalls) {
+        activeCalls[peerId].close();
+      }
+      activeCalls = {};
+
       isCamOn = false;
       isScreenSharing = false;
       isMusicPlaying = false;
       isDeafened = false;
-      lastRemotePeerId = null;
 
       targetSelectedChannel = "";
       document.getElementById('channelPasswordInput').value = "";
@@ -1283,24 +1314,14 @@
           isCamOn = true;
           document.getElementById('camBtn').innerText = "📷 Kamera Açık";
           updateStageLayout();
-
-          if (lastRemotePeerId) {
-            const call = peer.call(lastRemotePeerId, cameraStream);
-            currentCall = call;
-            call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
-          }
+          updateStreamToAllPeers();
         } catch (err) { alert("Kamera açılamadı: " + err); }
       } else {
         if (cameraStream) cameraStream.getTracks().forEach(track => track.stop());
         isCamOn = false;
         document.getElementById('camBtn').innerText = "📷 Kamera Kapalı";
         updateStageLayout();
-
-        if (lastRemotePeerId && !isScreenSharing) {
-          const call = peer.call(lastRemotePeerId, localStream);
-          currentCall = call;
-          call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
-        }
+        updateStreamToAllPeers();
       }
     }
 
@@ -1314,12 +1335,7 @@
         document.getElementById('stopScreenBtn').style.display = "block";
         updateStageLayout();
 
-        if (lastRemotePeerId) {
-          const call = peer.call(lastRemotePeerId, screenStream);
-          currentCall = call;
-          call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
-        }
-
+        updateStreamToAllPeers();
         videoTrack.onended = () => stopScreenShare();
       } catch (e) {
         isScreenSharing = false;
@@ -1334,12 +1350,17 @@
       document.getElementById('screenBtn').style.display = "block";
       document.getElementById('stopScreenBtn').style.display = "none";
       updateStageLayout();
+      updateStreamToAllPeers();
+    }
 
-      if (lastRemotePeerId) {
-        const streamFallback = (isCamOn && cameraStream) ? cameraStream : localStream;
-        const call = peer.call(lastRemotePeerId, streamFallback);
-        currentCall = call;
-        call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
+    function updateStreamToAllPeers() {
+      const streamToSend = getActiveStreamToSend();
+      for (let peerId in activeCalls) {
+        try {
+          const call = peer.call(peerId, streamToSend);
+          activeCalls[peerId] = call;
+          call.on('stream', remoteStream => { handleIncomingStream(remoteStream, peerId); });
+        } catch (e) {}
       }
     }
 
@@ -1362,10 +1383,8 @@
       if (isMusicPlaying) return;
       emptyState.style.display = "none";
       videoStage.style.display = "flex";
-      const container = document.getElementById('mediaContainerInner');
 
-      if (isScreenSharing) {
-        container.innerHTML = `<video id="mainVideo" autoplay playsinline></video>`;
+      if (isScreenSharing && screenStream) {
         document.getElementById('mainVideo').srcObject = screenStream;
         document.getElementById('mainLabel').innerText = `${username} (Ekran Paylaşımı)`;
         if (isCamOn && cameraStream) {
@@ -1375,8 +1394,7 @@
         } else {
           pipContainer.style.display = "none";
         }
-      } else if (isCamOn) {
-        container.innerHTML = `<video id="mainVideo" autoplay playsinline style="transform: scaleX(-1);"></video>`;
+      } else if (isCamOn && cameraStream) {
         document.getElementById('mainVideo').srcObject = cameraStream;
         document.getElementById('mainLabel').innerText = `${username} (Kamera)`;
         pipContainer.style.display = "none";
@@ -1386,23 +1404,26 @@
       }
     }
 
-    function handleIncomingStream(stream) {
+    function handleIncomingStream(stream, peerId) {
       if (isMusicPlaying) return;
       emptyState.style.display = "none";
       videoStage.style.display = "flex";
-      const container = document.getElementById('mediaContainerInner');
-      container.innerHTML = `<video id="mainVideo" autoplay playsinline></video>`;
+
       const videoEl = document.getElementById('mainVideo');
       videoEl.srcObject = stream;
-      
       videoEl.setAttribute('autoplay', '');
       videoEl.setAttribute('playsinline', '');
       videoEl.muted = false;
 
       document.getElementById('mainLabel').innerText = remoteUsername;
-      remoteAudioElement.srcObject = stream;
-      setupAudioVisualizer(stream, "remoteUserAvatarElem");
+      
+      if (stream.getAudioTracks().length > 0) {
+        remoteAudioElement.srcObject = stream;
+        setupAudioVisualizer(stream, "remoteUserAvatarElem");
+      }
     }
+
+    function removeRemoteStreamElement(peerId) {}
 
     function resetStageOnDisconnect() {
       if (!isCamOn && !isScreenSharing && !isMusicPlaying) {
