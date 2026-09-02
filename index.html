@@ -419,7 +419,6 @@
   <audio id="remoteAudioElement" autoplay></audio>
 
   <script>
-    // Polling öncelikli başlatma: Railway proxy WebSocket frame hatalarını tamamen engeller
     const socket = io(window.location.origin, {
       transports: ['polling', 'websocket'],
       reconnection: true,
@@ -921,7 +920,12 @@
         port: window.location.port || (window.location.protocol === 'https:' ? 443 : 80),
         path: '/peerjs',
         secure: window.location.protocol === 'https:',
-        config: { 'iceServers': [{ urls: 'stun:stun.l.google.com:19302' }] }
+        config: { 
+          'iceServers': [
+            { urls: 'stun:stun.l.google.com:19302' },
+            { urls: 'stun:stun1.l.google.com:19302' }
+          ] 
+        }
       });
 
       peer.on('open', id => { window.myPeerId = id; });
@@ -1020,9 +1024,11 @@
         updateUserList(remoteUsername, true, false);
 
         setTimeout(() => {
-          const call = peer.call(userId, localStream);
-          currentCall = call;
-          call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
+          if (localStream) {
+            const call = peer.call(userId, localStream);
+            currentCall = call;
+            call.on('stream', remoteStream => { handleIncomingStream(remoteStream); });
+          }
         }, 1000);
       });
 
@@ -1137,6 +1143,11 @@
       isScreenSharing = false;
       isMusicPlaying = false;
       isDeafened = false;
+
+      // Hafızayı sıfırla ki tekrar girişte şifre sorunu yaşanmasın
+      targetSelectedChannel = "";
+      document.getElementById('channelPasswordInput').value = "";
+
       document.getElementById('deafenBtn').innerText = "🎧 Kulaklık: Açık";
       document.getElementById('camBtn').innerText = "📷 Kamera Kapalı";
       document.getElementById('screenBtn').style.display = "block";
