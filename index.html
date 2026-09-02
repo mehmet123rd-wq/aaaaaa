@@ -420,7 +420,7 @@
 
   <script>
     // Tarayıcı ve Radmin IP Adresini Otomatik Algılar (localhost veya 26.x.x.x)
-    const SERVER_IP = window.location.hostname || 'localhost'; 
+    const socket = io (window.location.origin); 
     let socket;
     let peer;
 
