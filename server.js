@@ -40,6 +40,7 @@ const usersDB = {
 
 let activeRoomUsers = {}; 
 let userSocketMap = {}; // Kullanıcı adı ile socket.id eşlemesi için
+let socketUserMap = {}; // socket.id ile kullanıcı adı eşlemesi için (Disconnect yönetimi için eklendi)
 
 io.on('connection', (socket) => {
   
@@ -74,6 +75,8 @@ io.on('connection', (socket) => {
     }
 
     userSocketMap[username] = socket.id;
+    socketUserMap[socket.id] = username; // Disconnect için kaydediyoruz
+    
     const isAdmin = (username === 'admin');
     let pendingUsers = isAdmin ? Object.keys(usersDB).filter(u => !usersDB[u].approved) : [];
 
@@ -98,8 +101,10 @@ io.on('connection', (socket) => {
 
     usersDB[cleanNew] = usersDB[oldUsername];
     delete usersDB[oldUsername];
+    
     if (userSocketMap[oldUsername]) {
       userSocketMap[cleanNew] = userSocketMap[oldUsername];
+      socketUserMap[userSocketMap[oldUsername]] = cleanNew; // Socket map güncellendi
       delete userSocketMap[oldUsername];
     }
     socket.emit('settings-action-result', { success: true, message: "Kullanıcı adı güncellendi!", newUsername: cleanNew });
@@ -188,7 +193,6 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Eksik olan Banlama Özelliği Eklendi
   socket.on('ban-user', (data) => {
     const { adminUser, targetUser } = data;
     if (adminUser === 'admin' && usersDB[targetUser] && targetUser !== 'admin') {
@@ -224,33 +228,44 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('stop-music-response');
   });
 
-  // Oda İçi Mesajlaşma ve Etkileşimler (Doğru Kapsamda Düzeltildi)
+  // Kullanıcı Odaya Katıldığında
   socket.on('join-room', (roomId, userId, username) => {
     if (!usersDB[username] || !usersDB[username].approved) {
       return socket.emit('unauthorized-action', "Hesabınız onaylanmamış!");
     }
+    
+    // Eski odalardan çıkış yapmasını sağlıyoruz ki socket çakışmasın
+    Array.from(socket.rooms).forEach(room => {
+      if (room !== socket.id) {
+        socket.leave(room);
+      }
+    });
+
     socket.join(roomId);
+    socket.roomId = roomId; // Disconnect durumunda kullanmak için odayı socket objesine yazıyoruz
     userSocketMap[username] = socket.id;
+    socketUserMap[socket.id] = username;
 
     if (!activeRoomUsers[roomId]) activeRoomUsers[roomId] = [];
     if (!activeRoomUsers[roomId].includes(username)) activeRoomUsers[roomId].push(username);
 
     io.emit('update-active-users', activeRoomUsers);
     const userAvatar = usersDB[username] ? usersDB[username].avatar : "";
+    
+    // Odaya katıldığını odadaki DİĞER kullanıcılara bildiriyoruz
     socket.to(roomId).emit('user-connected', userId, username, userAvatar);
-
-    socket.on('disconnect', () => {
-      for (let rId in activeRoomUsers) {
-        activeRoomUsers[rId] = activeRoomUsers[rId].filter(u => u !== username);
-      }
-      io.emit('update-active-users', activeRoomUsers);
-      socket.to(roomId).emit('user-disconnected', userId);
-    });
   });
 
+  // DOĞRU KAPSAM: Mesaj gönderme işlemi join-room'un DIŞINDA ana blokta olmalı
   socket.on('send-message', (data) => {
     if (data.roomId) {
-      socket.to(data.roomId).emit('receive-message', { user: data.user, avatar: data.avatar, message: data.message, file: data.file });
+      // Mesajı odaya (gönderen hariç) sorunsuzca iletiyoruz
+      socket.to(data.roomId).emit('receive-message', { 
+        user: data.user, 
+        avatar: data.avatar, 
+        message: data.message, 
+        file: data.file 
+      });
     }
   });
 
@@ -261,6 +276,26 @@ io.on('connection', (socket) => {
   socket.on('stop-typing', (data) => {
     if (data.roomId) socket.to(data.roomId).emit('user-stop-typing', { username: data.username });
   });
+
+  // DOĞRU KAPSAM: Disconnect olayı da ana blokta olmalıdır.
+  socket.on('disconnect', () => {
+    const username = socketUserMap[socket.id];
+    
+    if (username) {
+      for (let rId in activeRoomUsers) {
+        activeRoomUsers[rId] = activeRoomUsers[rId].filter(u => u !== username);
+      }
+      io.emit('update-active-users', activeRoomUsers);
+      
+      if (socket.roomId) {
+        socket.to(socket.roomId).emit('user-disconnected', socket.id);
+      }
+      
+      delete userSocketMap[username];
+      delete socketUserMap[socket.id];
+    }
+  });
+
 });
 
 const PORT = process.env.PORT || 3000;
