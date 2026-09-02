@@ -39,6 +39,7 @@ const usersDB = {
 };
 
 let activeRoomUsers = {}; 
+let userSocketMap = {}; // Kullanıcı adı ile socket.id eşlemesi için
 
 io.on('connection', (socket) => {
   
@@ -72,6 +73,7 @@ io.on('connection', (socket) => {
       return socket.emit('auth-result', { success: false, message: "Hesabınız henüz yönetici tarafından onaylanmadı!" });
     }
 
+    userSocketMap[username] = socket.id;
     const isAdmin = (username === 'admin');
     let pendingUsers = isAdmin ? Object.keys(usersDB).filter(u => !usersDB[u].approved) : [];
 
@@ -96,6 +98,10 @@ io.on('connection', (socket) => {
 
     usersDB[cleanNew] = usersDB[oldUsername];
     delete usersDB[oldUsername];
+    if (userSocketMap[oldUsername]) {
+      userSocketMap[cleanNew] = userSocketMap[oldUsername];
+      delete userSocketMap[oldUsername];
+    }
     socket.emit('settings-action-result', { success: true, message: "Kullanıcı adı güncellendi!", newUsername: cleanNew });
   });
 
@@ -182,6 +188,18 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Eksik olan Banlama Özelliği Eklendi
+  socket.on('ban-user', (data) => {
+    const { adminUser, targetUser } = data;
+    if (adminUser === 'admin' && usersDB[targetUser] && targetUser !== 'admin') {
+      delete usersDB[targetUser];
+      const targetSocketId = userSocketMap[targetUser];
+      if (targetSocketId) {
+        io.to(targetSocketId).emit('user-banned');
+      }
+    }
+  });
+
   socket.on('play-music-request', async (data) => {
     const { roomId, query, username } = data;
     if (usersDB[username] && !usersDB[username].approved) return;
@@ -206,24 +224,20 @@ io.on('connection', (socket) => {
     io.to(roomId).emit('stop-music-response');
   });
 
+  // Oda İçi Mesajlaşma ve Etkileşimler (Doğru Kapsamda Düzeltildi)
   socket.on('join-room', (roomId, userId, username) => {
     if (!usersDB[username] || !usersDB[username].approved) {
       return socket.emit('unauthorized-action', "Hesabınız onaylanmamış!");
     }
     socket.join(roomId);
+    userSocketMap[username] = socket.id;
+
     if (!activeRoomUsers[roomId]) activeRoomUsers[roomId] = [];
     if (!activeRoomUsers[roomId].includes(username)) activeRoomUsers[roomId].push(username);
 
     io.emit('update-active-users', activeRoomUsers);
     const userAvatar = usersDB[username] ? usersDB[username].avatar : "";
     socket.to(roomId).emit('user-connected', userId, username, userAvatar);
-
-    socket.on('send-message', (data) => {
-      socket.to(data.roomId).emit('receive-message', { user: data.user, avatar: data.avatar, message: data.message, file: data.file });
-    });
-
-    socket.on('typing', (data) => socket.to(data.roomId).emit('user-typing', { username: data.username }));
-    socket.on('stop-typing', (data) => socket.to(data.roomId).emit('user-stop-typing', { username: data.username }));
 
     socket.on('disconnect', () => {
       for (let rId in activeRoomUsers) {
@@ -232,6 +246,20 @@ io.on('connection', (socket) => {
       io.emit('update-active-users', activeRoomUsers);
       socket.to(roomId).emit('user-disconnected', userId);
     });
+  });
+
+  socket.on('send-message', (data) => {
+    if (data.roomId) {
+      socket.to(data.roomId).emit('receive-message', { user: data.user, avatar: data.avatar, message: data.message, file: data.file });
+    }
+  });
+
+  socket.on('typing', (data) => {
+    if (data.roomId) socket.to(data.roomId).emit('user-typing', { username: data.username });
+  });
+
+  socket.on('stop-typing', (data) => {
+    if (data.roomId) socket.to(data.roomId).emit('user-stop-typing', { username: data.username });
   });
 });
 
